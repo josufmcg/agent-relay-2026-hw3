@@ -45,3 +45,6 @@ ci-deploy:
 	"$(ACT_BIN)" -j build-and-deploy -P ubuntu-latest=$(ACT_PLATFORM)
 
 ci: ci-deploy
+
+fix-cluster-config:
+	kind export kubeconfig --name kind
