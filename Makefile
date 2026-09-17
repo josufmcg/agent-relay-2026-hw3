@@ -48,3 +48,4 @@ ci: ci-deploy
 
 fix-cluster-config:
 	kind export kubeconfig --name kind
+	kubectl config use-context kind-kind
