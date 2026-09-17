@@ -1,0 +1,91 @@
+name: Agent Relay CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  PYTHON_VERSION: "3.11"
+  K8S_NAMESPACE: agent-relay
+  KIND_CLUSTER: kind
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: agent_relay
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U relay -d agent_relay"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: latest
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Run tests against PostgreSQL
+        env:
+          RELAY_DATABASE_URL: postgresql+psycopg://relay:relay@127.0.0.1:15432/agent_relay
+        run: uv run pytest -q
+
+  build-and-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set unique image tag
+        id: image
+        run: echo "name=agent-relay:ci-${GITHUB_SHA}-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+      - name: Build Docker image
+        run: docker build -t "${{ steps.image.outputs.name }}" .
+      - name: Install kind
+        uses: helm/kind-action@v1.12.0
+        with:
+          install_only: true
+      - name: Configure kind cluster
+        run: |
+          if ! kind get clusters | grep -Fxq "$KIND_CLUSTER"; then
+            kind create cluster --name "$KIND_CLUSTER" --wait 120s
+          fi
+          kind export kubeconfig --name "$KIND_CLUSTER"
+      - name: Load image into kind
+        run: kind load docker-image "${{ steps.image.outputs.name }}" --name "${{ env.KIND_CLUSTER }}"
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/postgres.yaml
+          kubectl apply -f k8s/agent-relay.yaml
+          kubectl -n "$K8S_NAMESPACE" set image deployment/agent-relay \
+            agent-relay="${{ steps.image.outputs.name }}"
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/postgres -n "$K8S_NAMESPACE" --timeout=180s
+          kubectl rollout status deployment/agent-relay -n "$K8S_NAMESPACE" --timeout=180s
+      - name: Verify readiness
+        run: |
+          kubectl port-forward -n "$K8S_NAMESPACE" service/agent-relay 18000:8000 > /tmp/agent-relay-port-forward.log 2>&1 &
+          port_forward_pid=$!
+          trap 'kill "$port_forward_pid"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18000/ready; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/agent-relay-port-forward.log
+          exit 1

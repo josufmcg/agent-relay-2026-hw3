@@ -3,8 +3,10 @@ PORT ?= 8000
 KIND_CLUSTER ?= kind
 K8S_NAMESPACE ?= agent-relay
 KIND_BIN ?= $(shell command -v kind 2>/dev/null || printf '%s' "$(HOME)/go/bin/kind")
+ACT_BIN ?= $(shell command -v act 2>/dev/null || printf '%s' "$(HOME)/go/bin/act")
+ACT_PLATFORM ?= catthehacker/ubuntu:act-latest
 
-.PHONY: build run compose-up compose-down kind-load k8s-deploy k8s-down
+.PHONY: build run compose-up compose-down kind-load k8s-deploy k8s-down port-forward ci-test ci-deploy ci
 
 build:
 	docker build -t $(IMAGE) .
@@ -33,3 +35,13 @@ k8s-down:
 
 port-forward:
 	kubectl port-forward -n $(K8S_NAMESPACE) deployment/agent-relay $(PORT):8000
+
+ci-test:
+	@test -x "$(ACT_BIN)" || (echo "act was not found; install it or set ACT_BIN=/path/to/act" >&2; exit 1)
+	"$(ACT_BIN)" -j test -P ubuntu-latest=$(ACT_PLATFORM)
+
+ci-deploy:
+	@test -x "$(ACT_BIN)" || (echo "act was not found; install it or set ACT_BIN=/path/to/act" >&2; exit 1)
+	"$(ACT_BIN)" -j build-and-deploy -P ubuntu-latest=$(ACT_PLATFORM)
+
+ci: ci-deploy
