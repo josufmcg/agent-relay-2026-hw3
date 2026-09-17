@@ -1,9 +1,8 @@
-"""SQLite database setup and durable Agent Relay models.
+"""Database setup and durable Agent Relay models.
 
-This module is intentionally the only place that knows about SQLite connection
-pragmas and its writer-lock transaction.  The rest of the application talks to
-the models through :mod:`storage`; replacing this module with a PostgreSQL
-engine and a row-locking claim transaction is the planned student exercise.
+SQLite remains the default for lightweight local development, while the
+containerized deployment uses PostgreSQL. The rest of the application talks to
+the models through :mod:`storage`.
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ def utcnow() -> datetime:
 
 
 def as_db_time(value: datetime) -> datetime:
-    """SQLite's DateTime implementation is most portable with naive UTC."""
+    """Store UTC as a naive value for SQLite and timezone-aware-safe Postgres."""
 
     return value.astimezone(timezone.utc).replace(tzinfo=None)
 
@@ -189,7 +188,10 @@ def immediate_transaction() -> Generator[Session, None, None]:
     connection = engine.connect()
     session = Session(bind=connection, expire_on_commit=False, autoflush=True)
     try:
-        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        if _is_sqlite(DATABASE_URL):
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+        else:
+            connection.begin()
         yield session
         session.flush()
         connection.commit()
@@ -210,11 +212,15 @@ def recover_expired_in_session(db: Session, now: datetime) -> int:
             select(Attempt)
             .where(Attempt.outcome == "processing", Attempt.lease_expires_at <= now_db)
             .order_by(Attempt.lease_expires_at, Attempt.id)
+            .with_for_update(skip_locked=not _is_sqlite(DATABASE_URL))
         )
     )
     count = 0
     for attempt in expired:
-        task = db.get(Task, attempt.task_id)
+        task_query = select(Task).where(Task.id == attempt.task_id)
+        if not _is_sqlite(DATABASE_URL):
+            task_query = task_query.with_for_update()
+        task = db.scalar(task_query)
         if task is None or attempt.outcome != "processing":
             continue
         attempt.outcome = "expired"
