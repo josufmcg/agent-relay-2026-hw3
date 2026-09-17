@@ -15,6 +15,18 @@ Open <http://127.0.0.1:8000/> for the token-based local dashboard. Use
 `PORT=8080 make run` to publish a different host port. `GET /health` is a
 liveness check and `GET /ready` verifies PostgreSQL connectivity and schema.
 
+## Run on local Kubernetes
+
+With a kind cluster available as the default `kind` cluster:
+
+```bash
+make k8s-deploy
+```
+
+The relay is available at <http://127.0.0.1:30080/>. To use another kind
+cluster, run `KIND_CLUSTER=my-cluster make k8s-deploy`. Remove the deployment
+with `make k8s-down`.
+
 Register two identities and send a task:
 
 ```bash
